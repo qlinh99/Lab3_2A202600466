@@ -42,6 +42,13 @@ PRODUCTS = [
         "weight_kg": 0.35,
     },
     {
+        "name": "Sony WH-1000XM4",
+        "category": "headphone",
+        "price_vnd": 6990000,
+        "stock": 5,
+        "weight_kg": 0.5,
+    },
+    {
         "name": "AirPods Pro 2",
         "category": "headphone",
         "price_vnd": 5990000,
@@ -60,6 +67,7 @@ DESTINATION_BASE_FEES = {
     "hanoi": 30000,
     "da nang": 40000,
     "danang": 40000,
+    "ho chi minh city": 35000,
     "ho chi minh": 35000,
     "hcm": 35000,
 }

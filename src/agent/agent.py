@@ -1,8 +1,9 @@
-import os
+import ast
 import re
 from typing import List, Dict, Any, Optional
 from src.core.llm_provider import LLMProvider
 from src.telemetry.logger import logger
+from src.telemetry.metrics import tracker
 
 class ReActAgent:
     """
@@ -17,58 +18,184 @@ class ReActAgent:
         self.history = []
 
     def get_system_prompt(self) -> str:
-        """
-        TODO: Implement the system prompt that instructs the agent to follow ReAct.
-        Should include:
-        1.  Available tools and their descriptions.
-        2.  Format instructions: Thought, Action, Observation.
-        """
         tool_descriptions = "\n".join([f"- {t['name']}: {t['description']}" for t in self.tools])
         return f"""
-        You are an intelligent assistant. You have access to the following tools:
-        {tool_descriptions}
+You are a ReAct-style assistant.
+You must reason step by step and only use the tools listed below when external data or calculation is needed.
 
-        Use the following format:
-        Thought: your line of reasoning.
-        Action: tool_name(arguments)
-        Observation: result of the tool call.
-        ... (repeat Thought/Action/Observation if needed)
-        Final Answer: your final response.
+Available tools:
+{tool_descriptions}
+
+Follow this exact format:
+Thought: short reasoning about the next step
+Action: tool_name(arg_name="value", other_arg=123)
+Observation: tool result
+... repeat if needed
+Final Answer: the final answer for the user
+
+Rules:
+- If you need a tool, output exactly one Action line.
+- Do not invent tools that are not listed.
+- After receiving an Observation, continue reasoning from that observation.
+- If you already have enough information, output Final Answer.
         """
 
     def run(self, user_input: str) -> str:
-        """
-        TODO: Implement the ReAct loop logic.
-        1. Generate Thought + Action.
-        2. Parse Action and execute Tool.
-        3. Append Observation to prompt and repeat until Final Answer.
-        """
         logger.log_event("AGENT_START", {"input": user_input, "model": self.llm.model_name})
-        
+
+        self.history = []
         current_prompt = user_input
         steps = 0
 
         while steps < self.max_steps:
-            # TODO: Generate LLM response
-            # result = self.llm.generate(current_prompt, system_prompt=self.get_system_prompt())
-            
-            # TODO: Parse Thought/Action from result
-            
-            # TODO: If Action found -> Call tool -> Append Observation
-            
-            # TODO: If Final Answer found -> Break loop
-            
+            result = self.llm.generate(current_prompt, system_prompt=self.get_system_prompt())
+            content = result["content"].strip()
+
+            tracker.track_request(
+                provider=result.get("provider", "unknown"),
+                model=self.llm.model_name,
+                usage=result.get("usage", {}),
+                latency_ms=result.get("latency_ms", 0),
+            )
+
+            logger.log_event(
+                "AGENT_STEP",
+                {
+                    "step": steps + 1,
+                    "llm_output": content,
+                },
+            )
+
+            action = self._extract_action(content)
+            if action:
+                tool_name, raw_args = action
+                logger.log_event(
+                    "TOOL_CALL",
+                    {
+                        "step": steps + 1,
+                        "tool_name": tool_name,
+                        "raw_args": raw_args,
+                    },
+                )
+                observation = self._execute_tool(tool_name, raw_args)
+                logger.log_event(
+                    "TOOL_RESULT",
+                    {
+                        "step": steps + 1,
+                        "tool_name": tool_name,
+                        "observation": observation,
+                    },
+                )
+                self.history.append(
+                    {
+                        "thought_action": self._sanitize_action_content(content, tool_name, raw_args),
+                        "observation": observation,
+                    }
+                )
+                current_prompt = self._build_followup_prompt(user_input)
+            else:
+                final_answer = self._extract_final_answer(content)
+                if final_answer:
+                    logger.log_event(
+                        "AGENT_END",
+                        {
+                            "steps": steps + 1,
+                            "response": final_answer,
+                            "status": "completed",
+                        },
+                    )
+                    return final_answer
+
+                self.history.append(
+                    {
+                        "thought_action": content,
+                        "observation": "No action provided. Please either call one tool or return Final Answer.",
+                    }
+                )
+                current_prompt = self._build_followup_prompt(user_input)
+
             steps += 1
-            
-        logger.log_event("AGENT_END", {"steps": steps})
-        return "Not implemented. Fill in the TODOs!"
+
+        timeout_response = "Agent stopped because it reached max_steps without producing a Final Answer."
+        logger.log_event(
+            "AGENT_END",
+            {
+                "steps": steps,
+                "response": timeout_response,
+                "status": "max_steps_exceeded",
+            },
+        )
+        return timeout_response
 
     def _execute_tool(self, tool_name: str, args: str) -> str:
-        """
-        Helper method to execute tools by name.
-        """
         for tool in self.tools:
-            if tool['name'] == tool_name:
-                # TODO: Implement dynamic function calling or simple if/else
-                return f"Result of {tool_name}"
+            if tool["name"] == tool_name:
+                try:
+                    parsed_args = self._parse_action_args(args)
+                    parsed_args = self._normalize_tool_args(tool_name, parsed_args)
+                    return tool["function"](**parsed_args)
+                except Exception as exc:
+                    return f"Tool {tool_name} failed: {exc}"
         return f"Tool {tool_name} not found."
+
+    def _extract_final_answer(self, text: str) -> Optional[str]:
+        match = re.search(r"Final Answer:\s*(.+)", text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _extract_action(self, text: str) -> Optional[tuple[str, str]]:
+        match = re.search(r"Action:\s*([a-zA-Z_][a-zA-Z0-9_]*)\((.*)\)", text, flags=re.DOTALL)
+        if not match:
+            return None
+        return match.group(1), match.group(2).strip()
+
+    def _parse_action_args(self, raw_args: str) -> Dict[str, Any]:
+        if not raw_args:
+            return {}
+
+        call_node = ast.parse(f"f({raw_args})", mode="eval").body
+        if not isinstance(call_node, ast.Call):
+            raise ValueError("Invalid action arguments.")
+
+        if call_node.args:
+            raise ValueError("Only keyword arguments are supported in Action.")
+
+        parsed_args = {}
+        for keyword in call_node.keywords:
+            if keyword.arg is None:
+                raise ValueError("Unsupported unpacked keyword arguments.")
+            parsed_args[keyword.arg] = ast.literal_eval(keyword.value)
+        return parsed_args
+
+    def _normalize_tool_args(self, tool_name: str, parsed_args: Dict[str, Any]) -> Dict[str, Any]:
+        normalized_args = dict(parsed_args)
+
+        if tool_name == "calc_shipping":
+            if "destination_city" in normalized_args and "destination" not in normalized_args:
+                normalized_args["destination"] = normalized_args.pop("destination_city")
+            if "city" in normalized_args and "destination" not in normalized_args:
+                normalized_args["destination"] = normalized_args.pop("city")
+
+        if tool_name == "find_cheapest_product" and "category" in normalized_args:
+            category = str(normalized_args["category"]).strip().lower()
+            if category.endswith("s"):
+                normalized_args["category"] = category[:-1]
+
+        return normalized_args
+
+    def _build_followup_prompt(self, user_input: str) -> str:
+        lines = [f"User Question: {user_input}", ""]
+        for item in self.history:
+            lines.append(item["thought_action"])
+            lines.append(f"Observation: {item['observation']}")
+            lines.append("")
+        lines.append("Continue from the latest observation. Return either one Action or Final Answer.")
+        return "\n".join(lines)
+
+    def _sanitize_action_content(self, content: str, tool_name: str, raw_args: str) -> str:
+        thought_match = re.search(r"Thought:\s*(.+?)(?:\nAction:|$)", content, flags=re.DOTALL)
+        thought_line = "Thought: Continuing with the next tool step."
+        if thought_match:
+            thought_line = f"Thought: {thought_match.group(1).strip()}"
+        return f"{thought_line}\nAction: {tool_name}({raw_args})"

@@ -1,3 +1,5 @@
+import os
+import datetime
 import argparse
 import sys
 from typing import Iterable, Optional
@@ -6,6 +8,7 @@ from promt import get_all_prompts, get_prompt_by_id
 from src.agent.agent import ReActAgent
 from src.chatbot import ChatbotBaseline
 from src.core.provider_factory import create_provider
+from src.tools.registry import get_tools
 
 
 """
@@ -46,7 +49,7 @@ def build_runner(mode: str, llm):
     if mode == "chatbot":
         return ChatbotBaseline(llm=llm)
     if mode == "agent":
-        return ReActAgent(llm=llm, tools=[])
+        return ReActAgent(llm=llm, tools=get_tools())
     raise ValueError(f"Unsupported mode: {mode}")
 
 
@@ -69,11 +72,16 @@ def run_comparison(mode: str, prompt_ids=None, runner=None):
     results = []
     for item in selected_prompts:
         response = execute_prompt(mode, active_runner, item["prompt"])
+        history = getattr(active_runner, "history", None)
+        if history is not None:
+            history = list(history)
+            
         results.append(
             {
                 **item,
                 "mode": mode,
                 "response": response,
+                "history": history,
             }
         )
 
@@ -111,14 +119,41 @@ def main():
     if not args.mode:
         parser.error("--mode is required unless --list-prompts is used.")
 
-    results = run_comparison(mode=args.mode, prompt_ids=args.prompt_ids)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file_path = os.path.join(log_dir, f"{args.mode}-{timestamp}.log")
+    
+    with open(log_file_path, "w", encoding="utf-8") as log_file:
+        def log_and_print(text: str):
+            safe_print(text)
+            log_file.write(text + "\n")
+            log_file.flush()
 
-    for item in results:
-        safe_print(f"[{item['mode']}] {item['id']} - {item['label']}")
-        safe_print(f"Prompt: {item['prompt']}")
-        safe_print(f"Response: {item['response']}")
-        safe_print("")
+        log_and_print(f"Starting {args.mode} run at {timestamp}")
+        log_and_print("=" * 50)
 
+        results = run_comparison(mode=args.mode, prompt_ids=args.prompt_ids)
+
+        for item in results:
+            log_and_print(f"[{item['mode']}] {item['id']} - {item['label']}")
+            log_and_print(f"User Prompt: {item['prompt']}")
+            log_and_print("-" * 20 + " CONVERSATION " + "-" * 20)
+            
+            if item.get("history"):
+                for step_idx, step in enumerate(item["history"], 1):
+                    log_and_print(f"--- Step {step_idx} ---")
+                    if 'thought_action' in step:
+                        log_and_print(f"{step['thought_action']}")
+                    if 'observation' in step:
+                        log_and_print(f"Observation: {step['observation']}")
+                        
+            log_and_print("-" * 20 + " END CONVERSATION " + "-" * 20)
+            log_and_print(f"Final Response: {item['response']}")
+            log_and_print("=" * 50)
+            log_and_print("")
+
+    print(f"Run completed. Logs saved to: {log_file_path}")
 
 if __name__ == "__main__":
     main()
