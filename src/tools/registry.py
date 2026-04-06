@@ -19,7 +19,7 @@ def get_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "book_meeting",
-            "description": "Book a meeting at a specific time slot for specified people. Provide person_names, date (YYYY-MM-DD), time (HH:MM), title, duration, organizer_email (optional), custom_message (optional).",
+            "description": "Book a meeting at a specific time slot for specified people. Provide person_names, date (YYYY-MM-DD), time (HH:MM), title, and duration (IN HOURS, e.g. 1 or 1.5).",
             "function": book_meeting.execute
         },
         {

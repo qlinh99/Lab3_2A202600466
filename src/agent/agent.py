@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 from src.core.llm_provider import LLMProvider
 from src.telemetry.logger import logger
 from src.telemetry.metrics import tracker
+from datetime import datetime
 
 class ReActAgent:
     """
@@ -19,20 +20,19 @@ class ReActAgent:
 
     def get_system_prompt(self) -> str:
         tool_descriptions = "\n".join([f"- {t['name']}: {t['description']}" for t in self.tools])
-        return f"""
-You are a ReAct-style assistant.
-You must reason step by step and only use the tools listed below when external data or calculation is needed.
-
-Available tools:
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        return f"""You are a helpful AI assistant with access to several tools.
+Below are the available tools:
 {tool_descriptions}
 
-Follow this exact format:
+Important: The current date is {current_date}. Keep this in mind when dealing with scheduling such as 'next week' or 'tomorrow'.
+
+When you need to use a tool, you MUST use the following format:
 Thought: short reasoning about the next step
 Action: tool_name(arg_name="value", other_arg=123)
 Observation: tool result
 ... repeat if needed
 Final Answer: the final answer for the user
-
 Rules:
 - If you need a tool, output exactly one Action line.
 - Do not invent tools that are not listed.

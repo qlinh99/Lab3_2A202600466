@@ -7,7 +7,7 @@ Parameters:
 - date: Meeting date (YYYY-MM-DD)
 - time: Meeting time (HH:MM format)
 - title: Meeting title
-- duration: Meeting duration in hours (default: 1)
+- duration: Meeting duration in hours (e.g. 1 or 1.5). Default 1.
 Returns: Booking confirmation or error message
 """
 
@@ -41,7 +41,7 @@ class BookingTool:
         with open(self.bookings_file, 'w', encoding='utf-8') as f:
             json.dump(self.bookings, f, indent=2, ensure_ascii=False)
 
-    def book_meeting(self, person_names: str, date: str, time: str, title: str, duration: int = 1, organizer_email: str = None, custom_message: str = None) -> str:
+    def book_meeting(self, person_names: str, date: str, time: str, title: str, duration: float = 1.0) -> str:
         """
         Book a meeting for specified people at given time
         Args:
@@ -49,13 +49,15 @@ class BookingTool:
             date: Date in YYYY-MM-DD format
             time: Time in HH:MM format
             title: Meeting title
-            duration: Duration in hours
-            organizer_email: Optional organizer email to send invitations
-            custom_message: Optional custom message for emails
+            duration: Duration in hours (if > 12, assumed to be minutes and converted to hours)
         Returns:
             Booking confirmation or error
         """
         self._load_data()
+        
+        # Auto-correct duration if LLM passed minutes (e.g. 60)
+        if duration > 12:
+            duration = duration / 60.0
         
         # Parse attendees
         attendees = [name.strip() for name in person_names.split(',')]
@@ -143,30 +145,9 @@ class BookingTool:
    Attendees: {', '.join([p['name'] for p in attendee_objects])}
    Booking ID: {booking_id}"""
 
-        # Send invitation emails if organizer email provided
-        email_result = ""
-        if organizer_email:
-            import sys
-            import os
-            sys.path.append(os.path.dirname(__file__))
-            from send_invitation_email import EmailTool
-            email_tool = EmailTool()
-            email_result = email_tool.send_invitation_email(booking_id, organizer_email, custom_message)
-            email_result = f"\n\n{email_result}"
-
-        return f"""✅ Meeting booked successfully!
-
-📅 Meeting Details:
-   Title: {title}
-   Date: {date}
-   Time: {time}
-   Duration: {duration} hour(s)
-   Attendees: {', '.join([p['name'] for p in attendee_objects])}
-   Booking ID: {booking_id}{email_result}"""
-
 # Global instance for tool execution
 booking_tool = BookingTool()
 
-def execute(person_names: str, date: str, time: str, title: str, duration: int = 1, organizer_email: str = None, custom_message: str = None) -> str:
+def execute(person_names: str, date: str, time: str, title: str, duration: float = 1.0) -> str:
     """Execute the book_meeting tool"""
-    return booking_tool.book_meeting(person_names, date, time, title, duration, organizer_email, custom_message)
+    return booking_tool.book_meeting(person_names, date, time, title, duration)
